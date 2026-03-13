@@ -10,13 +10,15 @@ phụ thuộc vào hệ điều hành để cài đặt phía dưới đây
 <summary>windowns here</summary>
 
 step 3
-use script **install.cmd**
+run file **install.cmd** to install
 
 step 4 edit file .env để khởi chạy
 
 step 5 run script by **npm start**
 
 </details>
+
+or
 
 <details>
 <summary>linux here</summary>
