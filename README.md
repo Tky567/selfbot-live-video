@@ -14,7 +14,11 @@ run file **install.cmd** to install
 
 step 4 edit file .env để khởi chạy
 
-step 5 run script by **npm start**
+step 5 run script in cmd
+
+```cmd
+npm start
+```
 
 </details>
 
