@@ -1,21 +1,21 @@
 bỏ qua tiện ích nếu địa chỉ ip của bạn không bị signin to continue
-step 1
+
 install extension **Get cookies.txt** in
 https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
 
-# **step 2**
+# **step 1**
 phụ thuộc vào hệ điều hành để cài đặt phía dưới đây
 
 <details>
 <summary>windowns here</summary>
 
-# **step 3**
+# **step 2**
 run file **install.cmd** to install
 
-# **step 4**
+# **step 3**
 edit file .env để khởi chạy
 
-# **step 5**
+# **step 4**
 run file **start.cmd** to start bot
 
 </details>
@@ -25,7 +25,7 @@ or
 <details>
 <summary>linux here</summary>
 
-# **step 3**
+# **step 2**
 use script **install.sh** in terminal
 
 # **1**
@@ -37,10 +37,10 @@ chmod +x install.sh
 ./install.sh
 ```
 
-# **step 4**
+# **step 3**
 edit file **.env** trước khi chạy
 
-# **step 5**
+# **step 4**
 ```sh
 ./start.sh
 ```
