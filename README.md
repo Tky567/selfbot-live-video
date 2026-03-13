@@ -25,10 +25,11 @@ or
 
 step 3 use script **install.sh** in terminal
 
+1
 ```sh
 chmod +x install.sh
 ```
-
+2
 ```sh
 ./install.sh
 ```
