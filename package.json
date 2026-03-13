@@ -1,15 +1,13 @@
 {
   "name": "streamselfbot",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
   "scripts": {
     "postinstall": "node -e \"if(process.platform!=='win32'){require('child_process').execSync('chmod +x bin/ffmpeg bin/yt-dlp',{stdio:'inherit'})}\"",
     "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["selfbot", "discord", "stream", "video"],
+  "author": "Tky567",
   "type": "commonjs",
   "dependencies": {
     "@dank074/discord-video-stream": "^6.0.0",
