@@ -1,4 +1,4 @@
-Use the extension below to extract your browser cookies in the cookies.txt format, which will be required for your configuration file
+Use the extension below to get your discord cookies, which will be required for your ".env" file
 
 ```
 
