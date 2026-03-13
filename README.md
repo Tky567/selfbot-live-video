@@ -1,11 +1,10 @@
-Use the extension below to get your discord cookies, which will be required for your ".env" file
+<details>
+<summary>windowns here</summary>
 
-```
+Nội dung ẩn ở đây. Có thể dùng **Markdown** bình thường.
 
-https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
+- Item 1
+- Item 2
+- Item 3
 
-```
-
-# ABOUT
-Has it been patched yet?
-- No, it still work
+</details>
