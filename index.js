@@ -6,9 +6,10 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const path = require('path');
 
-// Đường dẫn đến ffmpeg và yt-dlp trong thư mục bin/
-process.env.FFMPEG_PATH = path.join(__dirname, 'bin', 'ffmpeg.exe');
-const YTDLP_PATH = path.join(__dirname, 'bin', 'yt-dlp.exe');
+// Đường dẫn đến ffmpeg và yt-dlp trong thư mục bin/ (hỗ trợ Windows + Linux)
+const isWindows = process.platform === 'win32';
+process.env.FFMPEG_PATH = path.join(__dirname, 'bin', isWindows ? 'ffmpeg.exe' : 'ffmpeg');
+const YTDLP_PATH = path.join(__dirname, 'bin', isWindows ? 'yt-dlp.exe' : 'yt-dlp');
 
 const client = new Client();
 const streamer = new Streamer(client);
@@ -21,7 +22,7 @@ let activeCommand = null;
 let activeMergeProcess = null;
 
 const CHUNK_THRESHOLD = 1200; 
-const PREFIX = "!.";
+const PREFIX = "!";
 const ADMIN_IDS = (process.env.ADMIN_ID || "").split(",").map(id => id.trim()).filter(Boolean);
 
 // Detect GPU lúc khởi động
