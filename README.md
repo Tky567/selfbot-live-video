@@ -22,4 +22,5 @@ step 5 run script by **npm start**
 <summary>linux here</summary>
 
 step 3 use script **install.sh** in terminal
-`sh ./install.sh`
+```sh
+./install.sh```
