@@ -1,14 +1,18 @@
 {
-  "name": "streamselfbot",
+  "name": "selfbot-live-video",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "postinstall": "node -e \"if(process.platform!=='win32'){require('child_process').execSync('chmod +x bin/ffmpeg bin/yt-dlp',{stdio:'inherit'})}\"",
     "start": "node index.js"
   },
-  "keywords": ["selfbot", "discord", "stream", "video"],
+  "keywords": ["selfbot", "discord", "live", "video", "stream"],
   "author": "Tky567",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22.14.0",
+    "npm": ">=10.0.0"
+  },
   "dependencies": {
     "@dank074/discord-video-stream": "^6.0.0",
     "@discordjs/opus": "^0.10.0",
