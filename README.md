@@ -9,7 +9,7 @@ https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenk
 ### phụ thuộc vào hệ điều hành để cài đặt phía dưới đây
 
 <details>
-<summary>windowns here</summary>
+<summary>## windowns here</summary>
 
 # **step 2**
 ## run file **install.cmd** to install
