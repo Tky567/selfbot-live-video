@@ -1,3 +1,7 @@
+if (!globalThis.WebSocket) {
+    globalThis.WebSocket = require('ws');
+}
+
 require('dotenv').config();
 const { Client } = require('discord.js-selfbot-v13');
 const { Streamer, prepareStream, playStream, Utils, Encoders } = require('@dank074/discord-video-stream');
@@ -5,27 +9,73 @@ const { execSync, exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const path = require('path');
+const fs = require('fs');
 
-// Đường dẫn đến ffmpeg và yt-dlp trong thư mục bin/ (hỗ trợ Windows + Linux)
 const isWindows = process.platform === 'win32';
 process.env.FFMPEG_PATH = path.join(__dirname, 'bin', isWindows ? 'ffmpeg.exe' : 'ffmpeg');
 const YTDLP_PATH = path.join(__dirname, 'bin', isWindows ? 'yt-dlp.exe' : 'yt-dlp');
 
+if (!isWindows) {
+    try {
+        fs.chmodSync(process.env.FFMPEG_PATH, 0o755);
+        fs.chmodSync(YTDLP_PATH, 0o755);
+        console.log('[Init] Granted execute permission for ffmpeg and yt-dlp');
+    } catch (e) {
+        console.error('[Init] Cannot grant execute permission for binaries:', e.message);
+    }
+}
+
+try {
+    const ver = execSync(`"${YTDLP_PATH}" --version`, { timeout: 10000 }).toString().trim();
+    console.log(`[Init] yt-dlp version: ${ver}`);
+} catch (e) {
+    console.error(`[Init] yt-dlp is not working! Error: ${e.message}`);
+    console.error('[Init] Make sure bin/yt-dlp is the correct binary for the current OS (' + process.platform + ')');
+}
+
+let HAS_DENO = false;
+if (!isWindows) {
+    try {
+        const denoVer = execSync('deno --version', { timeout: 5000 }).toString().split('\n')[0].trim();
+        HAS_DENO = true;
+        console.log(`[Init] ${denoVer}`);
+    } catch (e) {
+        console.warn('[Init] deno is not installed! yt-dlp needs deno to decode YouTube signatures.');
+        console.warn('[Init] Install with: curl -fsSL https://deno.land/install.sh | sh');
+    }
+}
+
 const client = new Client();
 const streamer = new Streamer(client);
 
-// Trạng thái bot
 let isStreaming = false;
 let currentTimestamp = 0;
 let currentVideoUrl = "";
 let activeCommand = null;
 let activeMergeProcess = null;
 
-const CHUNK_THRESHOLD = 1200; 
+const CHUNK_THRESHOLD = 1200;
 const PREFIX = "!";
 const ADMIN_IDS = (process.env.ADMIN_ID || "").split(",").map(id => id.trim()).filter(Boolean);
 
-// Detect GPU lúc khởi động
+const COOKIE_PATH = path.join(__dirname, 'cookies.txt');
+const HAS_COOKIE = fs.existsSync(COOKIE_PATH);
+if (HAS_COOKIE) {
+    console.log('[Init] Found cookies.txt');
+    if (!isWindows) {
+        try {
+            const raw = fs.readFileSync(COOKIE_PATH, 'utf8');
+            if (raw.includes('\r\n')) {
+                fs.writeFileSync(COOKIE_PATH, raw.replace(/\r\n/g, '\n'), 'utf8');
+                console.log('[Init] Fixed line endings in cookies.txt (\\r\\n -> \\n) for Linux');
+            }
+        } catch (e) {
+            console.error('[Init] Cannot fix line endings in cookies.txt:', e.message);
+        }
+    }
+}
+const COOKIE_FLAG = HAS_COOKIE ? `--cookies "${COOKIE_PATH}"` : '';
+
 let HAS_GPU = false;
 try {
     execSync('nvidia-smi', { stdio: 'ignore' });
@@ -34,9 +84,6 @@ try {
     HAS_GPU = false;
 }
 
-/**
- * Lấy cấu hình chất lượng dựa trên Nitro, giới hạn bởi chất lượng gốc của video
- */
 function getNitroQuality(client, videoInfo) {
     const premiumType = client.user.premiumType;
     const gpu = HAS_GPU;
@@ -45,7 +92,6 @@ function getNitroQuality(client, videoInfo) {
     else if (premiumType === 1) { maxH = 1080; maxBitrate = 5000; maxAudioBitrate = 128; }
     else { maxH = 720; maxBitrate = 2500; maxAudioBitrate = 96; }
 
-    // Không upscale vượt quá chất lượng gốc
     const srcH = videoInfo.height || 720;
     const srcFps = videoInfo.fps || 30;
     const height = Math.min(maxH, srcH);
@@ -54,86 +100,154 @@ function getNitroQuality(client, videoInfo) {
     return { height, fps, bitrate: maxBitrate, audioBitrate: maxAudioBitrate };
 }
 
-/**
- * Lấy thông tin video: duration, height, fps — ưu tiên DASH để biết chất lượng thực
- */
 async function getVideoInfo(url) {
+    const base = `"${YTDLP_PATH}" --print "%(duration)s|%(height)s|%(fps)s" -f "bv*[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/bv*[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8]" -S "res,fps" --quiet --no-warnings`;
     try {
-        const command = `"${YTDLP_PATH}" --print "%(duration)s|%(height)s|%(fps)s" -f "bv*[ext=mp4]/bv*/b" -S "res,fps" --quiet --no-warnings "${url}"`;
-        const { stdout } = await execAsync(command);
+        const { stdout } = await execAsync(`${base} "${url}"`);
         const [dur, h, f] = stdout.trim().split('|');
-        return {
-            duration: parseInt(dur) || 0,
-            height: parseInt(h) || 0,
-            fps: parseInt(f) || 0
-        };
+        return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
     } catch (e) {
+        console.error('[yt-dlp getVideoInfo] Attempt 1 failed:', e.stderr || e.message);
+        if (COOKIE_FLAG) {
+            console.log('[yt-dlp getVideoInfo] Retrying with cookie...');
+            try {
+                const { stdout } = await execAsync(`${base} ${COOKIE_FLAG} "${url}"`);
+                const [dur, h, f] = stdout.trim().split('|');
+                return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
+            } catch (e2) {
+                console.error('[yt-dlp getVideoInfo] Attempt 2 (cookie) failed:', e2.stderr || e2.message);
+            }
+        }
         return { duration: 0, height: 0, fps: 0 };
     }
 }
 
-/**
- * Lấy link stream YouTube (async) — ưu tiên DASH (video+audio riêng) cho chất lượng cao
- * Trả về { videoUrl, audioUrl } — audioUrl = null nếu là stream gộp
- */
 async function getYouTubeStream(url, maxHeight) {
+    const fmt = `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]/bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/b[protocol!=m3u8_native][protocol!=m3u8]`;
+    const base = `"${YTDLP_PATH}" -f "${fmt}" -S "res:${maxHeight},fps" --get-url`;
     try {
-        const fmt = `bv*[height<=${maxHeight}][ext=mp4]+ba[ext=m4a]/bv*[height<=${maxHeight}]+ba/b[ext=mp4]/b`;
-        const { stdout } = await execAsync(`"${YTDLP_PATH}" -f "${fmt}" -S "res:${maxHeight},fps" --get-url "${url}"`);
+        const { stdout } = await execAsync(`${base} "${url}"`);
         const lines = stdout.trim().split('\n').filter(l => l.trim());
-        if (lines.length >= 2) {
-            return { videoUrl: lines[0].trim(), audioUrl: lines[1].trim() };
-        }
-        return { videoUrl: lines[0]?.trim() || null, audioUrl: null };
+        if (lines.length >= 2) return { videoUrl: lines[0].trim(), audioUrl: lines[1].trim(), usePipe: false };
+        return { videoUrl: lines[0]?.trim() || null, audioUrl: null, usePipe: false };
     } catch (e) {
-        return { videoUrl: null, audioUrl: null };
+        console.error('[yt-dlp getYouTubeStream] Attempt 1 failed:', e.stderr || e.message);
+        if (HAS_COOKIE) {
+            console.log('[yt-dlp] Switching to pipe mode with cookie (avoiding 403)');
+            return { videoUrl: null, audioUrl: null, usePipe: true };
+        }
+        return { videoUrl: null, audioUrl: null, usePipe: false };
     }
 }
 
-/**
- * Hàm phát video chính
- */
+function spawnYtdlpPipe(url, maxHeight) {
+    const fmt = `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]/bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/b[protocol!=m3u8_native][protocol!=m3u8]`;
+    const args = [
+        '-f', fmt,
+        '-S', `res:${maxHeight},fps`,
+        '--cookies', COOKIE_PATH,
+        '--merge-output-format', 'mkv',
+        '--ffmpeg-location', process.env.FFMPEG_PATH,
+        '-o', '-',
+        url
+    ];
+    console.log('[yt-dlp pipe] Spawning yt-dlp pipe mode...');
+    const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.stderr.on('data', d => {
+        const msg = d.toString().trim();
+        if (msg && !msg.startsWith('[download]')) console.log('[yt-dlp pipe]', msg);
+    });
+    return proc;
+}
+
 async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) {
     isStreaming = true;
     currentTimestamp = 0;
     currentVideoUrl = videoSource;
 
-    // Lấy info video (async - không chặn event loop)
     const videoInfo = await getVideoInfo(videoSource);
     const totalDuration = videoInfo.duration;
     const dynamicChunkDuration = 1800;
 
     const quality = getNitroQuality(client, videoInfo);
     message.channel.send(
-        `📺 **Đang phát:** ${quality.height}p${quality.fps} | ` +
-        `${totalDuration > 0 ? `${Math.floor(totalDuration / 60)}ph${totalDuration % 60}s` : 'Live'}`
+        `📺 **Now playing:** ${quality.height}p${quality.fps} | ` +
+        `${totalDuration > 0 ? `${Math.floor(totalDuration / 60)}m${totalDuration % 60}s` : 'Live'}`
     );
 
     try {
         await streamer.joinVoice(guildId, voiceChannelId);
 
-        // Lấy URL chunk đầu tiên
         let nextStreamData = await getYouTubeStream(currentVideoUrl, quality.height);
+
+        if (nextStreamData.usePipe) {
+            console.log('[Stream] Pipe mode: yt-dlp will pipe video directly');
+            message.channel.send('📡 Playing via pipe mode (cookie)...');
+
+            activeMergeProcess = spawnYtdlpPipe(currentVideoUrl, quality.height);
+            const source = activeMergeProcess.stdout;
+
+            const encoder = HAS_GPU
+                ? Encoders.nvenc({ preset: "p4" })
+                : Encoders.software({ x264: { preset: "ultrafast" } });
+
+            const streamOpts = {
+                encoder,
+                height: quality.height,
+                frameRate: quality.fps,
+                bitrateVideo: quality.bitrate,
+                bitrateAudio: quality.audioBitrate,
+                includeAudio: true,
+                minimizeLatency: true,
+                readrateInitialBurst: 10,
+                videoCodec: Utils.normalizeVideoCodec("H264"),
+            };
+
+            const { command, output } = prepareStream(source, streamOpts);
+            activeCommand = command;
+
+            command.on("error", (err) => {
+                if (!err.message.includes("Output stream closed") && !err.message.includes("SIGKILL")) {
+                    console.error('[FFmpeg Error]', err.message);
+                }
+            });
+
+            await playStream(output, streamer, { type: "go-live" });
+
+            if (activeMergeProcess) {
+                try { activeMergeProcess.kill(); } catch (e) {}
+                activeMergeProcess = null;
+            }
+
+            if (isStreaming) {
+                message.channel.send("✅ Video playback finished.");
+                stopStreaming();
+            }
+            return;
+        }
 
         while (isStreaming) {
             if (totalDuration > 0 && currentTimestamp >= totalDuration) break;
 
             const streamData = nextStreamData;
-            if (!streamData.videoUrl) break;
-            nextStreamData = { videoUrl: null, audioUrl: null };
+            if (!streamData.videoUrl) {
+                console.error('[Stream] Could not get stream URL from yt-dlp');
+                message.channel.send('❌ Could not get video link. Please check the YouTube link or see the log.');
+                break;
+            }
+            nextStreamData = { videoUrl: null, audioUrl: null, usePipe: false };
 
             const encoder = HAS_GPU
                 ? Encoders.nvenc({ preset: "p4" })
                 : Encoders.software({ x264: { preset: "ultrafast" } });
             const remainingTime = totalDuration > 0 ? (totalDuration - currentTimestamp) : dynamicChunkDuration;
             const currentRunDuration = Math.min(dynamicChunkDuration, remainingTime);
-            
+
             const seekTime = currentTimestamp > 2 ? currentTimestamp - 2 : currentTimestamp;
             const totalTime = (currentRunDuration + (currentTimestamp > 2 ? 2 : 0)).toString();
 
             let source;
             if (streamData.audioUrl) {
-                // DASH: merge video+audio bằng ffmpeg copy (không tốn CPU)
                 const ffmpegPath = process.env.FFMPEG_PATH;
                 activeMergeProcess = spawn(ffmpegPath, [
                     '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
@@ -147,7 +261,6 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 ], { stdio: ['ignore', 'pipe', 'ignore'] });
                 source = activeMergeProcess.stdout;
             } else {
-                // Stream gộp: dùng URL trực tiếp
                 source = streamData.videoUrl;
             }
 
@@ -163,7 +276,6 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 videoCodec: Utils.normalizeVideoCodec("H264"),
             };
 
-            // Chỉ thêm seek/duration khi dùng URL trực tiếp (không phải pipe)
             if (!streamData.audioUrl) {
                 streamOpts.customInputOptions = [
                     '-ss', seekTime.toString(),
@@ -181,15 +293,13 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 }
             });
 
-            // Prefetch URL cho chunk tiếp theo trong lúc đang phát
             const needsNextChunk = totalDuration === 0 || (currentTimestamp + currentRunDuration < totalDuration);
             const prefetchPromise = (needsNextChunk && isStreaming)
                 ? getYouTubeStream(currentVideoUrl, quality.height)
-                : Promise.resolve({ videoUrl: null, audioUrl: null });
+                : Promise.resolve({ videoUrl: null, audioUrl: null, usePipe: false });
 
             await playStream(output, streamer, { type: "go-live" });
 
-            // Dọn merge process
             if (activeMergeProcess) {
                 try { activeMergeProcess.kill(); } catch (e) {}
                 activeMergeProcess = null;
@@ -201,14 +311,13 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
 
             if (totalDuration > 0 && totalDuration <= CHUNK_THRESHOLD) break;
 
-            // Lấy kết quả prefetch (thường đã xong từ lúc đang phát)
             if (isStreaming && (totalDuration === 0 || currentTimestamp < totalDuration)) {
                 nextStreamData = await prefetchPromise;
             }
         }
 
         if (isStreaming) {
-            message.channel.send("✅ Đã phát xong video.");
+            message.channel.send("✅ Video playback finished.");
             stopStreaming();
         }
     } catch (error) {
@@ -249,48 +358,47 @@ client.on('messageCreate', async (message) => {
     const command = args[0].toLowerCase();
 
     if (command === `${PREFIX}help`) {
-        message.reply(`**DANH SÁCH LỆNH:**\n` +
-                      `1️⃣ \`!play <link_youtube>\`: Phát video từ YouTube.\n` +
-                      `2️⃣ \`!stop\`: Dừng phát và rời khỏi kênh thoại.\n` +
-                      `*Lưu ý: Chỉ hỗ trợ link YouTube.*`);
+        message.reply(`**COMMAND LIST:**\n` +
+                      `1️⃣ \`!play <youtube_link>\`: Play a video from YouTube.\n` +
+                      `2️⃣ \`!stop\`: Stop playback and leave the voice channel.\n` +
+                      `*Note: Only YouTube links are supported.*`);
     }
 
     if (command === `${PREFIX}play`) {
         const videoUrl = args[1];
         const guildId = message.guildId;
 
-        if (!videoUrl) return message.reply("❓ Vui lòng gửi kèm link YouTube (Ví dụ: `!play https://youtube.com/...`) hoặc dùng !help.");
+        if (!videoUrl) return message.reply("❓ Please provide a YouTube link (Example: `!play https://youtube.com/...`) or use !help.");
 
         if (!guildId) {
-            return message.reply("❌ Lệnh này chỉ dùng trong server.");
+            return message.reply("❌ This command can only be used in a server.");
         }
 
-        // Fetch member để lấy voice state mới nhất
         const member = await message.guild.members.fetch(message.author.id).catch(() => null);
         const voiceId = member?.voice?.channelId;
 
         if (!voiceId) {
-            return message.reply("🎙️ Hãy vào một voice channel trước khi dùng !play.");
+            return message.reply("🎙️ Please join a voice channel before using !play.");
         }
 
         if (!videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be")) {
-            return message.reply("❌ Chỉ hỗ trợ link YouTube.");
+            return message.reply("❌ Only YouTube links are supported.");
         }
 
         if (isStreaming) stopStreaming();
-        
-        message.reply(`⏳ Đang xử lý video... (${HAS_GPU ? 'NVENC GPU' : 'x264 CPU'})`);
+
+        message.reply(`⏳ Processing video... (${HAS_GPU ? 'NVENC GPU' : 'x264 CPU'})`);
         startChunkedVideo(guildId, voiceId, videoUrl, message);
     }
 
     if (command === `${PREFIX}stop`) {
         stopStreaming();
-        message.reply("⏹️ Đã dừng phát video và rời kênh.");
+        message.reply("⏹️ Stopped playback and left the channel.");
     }
 });
 
 if (!process.env.DISCORD_TOKEN || ADMIN_IDS.length === 0) {
-    console.error("Thiếu DISCORD_TOKEN hoặc ADMIN_ID trong .env");
+    console.error("Missing DISCORD_TOKEN or ADMIN_ID in .env");
     process.exit(1);
 }
 
