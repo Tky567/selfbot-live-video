@@ -15,16 +15,14 @@ deno_install="${DENO_INSTALL:-$HOME/.deno}"
 bin_dir="$deno_install/bin"
 exe="$bin_dir/deno"
 mkdir -p "$bin_dir"
-curl --fail --location --progress-bar --output "$exe.zip" "https://dl.deno.land/release/${deno_version}/deno-${target}.zip"
+curl --fail --location --silent --output "$exe.zip" "https://dl.deno.land/release/${deno_version}/deno-${target}.zip"
 if command -v unzip >/dev/null; then
-	unzip -d "$bin_dir" -o "$exe.zip"
+	unzip -d "$bin_dir" -o "$exe.zip" >/dev/null
 else
-	7z x -o"$bin_dir" -y "$exe.zip"
+	7z x -o"$bin_dir" -y "$exe.zip" >/dev/null
 fi
 chmod +x "$exe"
 rm "$exe.zip"
-echo "Deno was installed successfully to $exe"
 if $exe eval 'const [major, minor] = Deno.version.deno.split("."); if (major < 2 && minor < 42) Deno.exit(1)' 2>/dev/null; then
-	$exe run -A --reload jsr:@deno/installer-shell-setup/bundled "$deno_install" -y
+	$exe run -A --reload jsr:@deno/installer-shell-setup/bundled "$deno_install" -y >/dev/null 2>&1
 fi
-echo "Done! Run '$exe --help' to get started"
