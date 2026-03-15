@@ -1,10 +1,10 @@
-bỏ qua tiện ích nếu địa chỉ ip của bạn không bị signin to continue
+bỏ qua tiện ích nếu địa chỉ ip của bạn không bị Sign in to confirm you're not a bot
 
 install extension **Get cookies.txt** in
 https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
 
 # **step 1**
-### chuẩn bị token và admin-id (kèm theo file cookies.txt từ tài khoản của bạn nếu thiết bị của bạn bị Signin to continue) tùy chọn
+### chuẩn bị token và admin-id (kèm theo file cookies.txt từ tài khoản của bạn nếu thiết bị của bạn bị Sign in to confirm you're not a bot)
 
 ### phụ thuộc vào hệ điều hành để cài đặt phía dưới đây
 

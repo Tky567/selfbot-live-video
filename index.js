@@ -5,9 +5,10 @@ if (!globalThis.WebSocket) {
 require('dotenv').config();
 const { Client } = require('discord.js-selfbot-v13');
 const { Streamer, prepareStream, playStream, Utils, Encoders } = require('@dank074/discord-video-stream');
-const { execSync, exec, spawn } = require('child_process');
+const { execSync, execFile, spawn } = require('child_process');
 const { promisify } = require('util');
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const { PassThrough } = require('stream');
 const path = require('path');
 const fs = require('fs');
 
@@ -55,6 +56,7 @@ let activeCommand = null;
 let activeMergeProcess = null;
 
 const CHUNK_THRESHOLD = 1200;
+const BUFFER_SIZE = 4096 * 1024 * 1024; // 64MB RAM buffer for smooth CPU usage
 const PREFIX = "!";
 const ADMIN_IDS = (process.env.ADMIN_ID || "").split(",").map(id => id.trim()).filter(Boolean);
 
@@ -74,7 +76,6 @@ if (HAS_COOKIE) {
         }
     }
 }
-const COOKIE_FLAG = HAS_COOKIE ? `--cookies "${COOKIE_PATH}"` : '';
 
 let HAS_GPU = false;
 try {
@@ -101,17 +102,18 @@ function getNitroQuality(client, videoInfo) {
 }
 
 async function getVideoInfo(url) {
-    const base = `"${YTDLP_PATH}" --print "%(duration)s|%(height)s|%(fps)s" -f "bv*[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/bv*[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8]" -S "res,fps" --quiet --no-warnings`;
+    const fmt = 'bv*[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/bv*[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8]';
+    const baseArgs = ['--print', '%(duration)s|%(height)s|%(fps)s', '-f', fmt, '-S', 'res,fps', '--quiet', '--no-warnings'];
     try {
-        const { stdout } = await execAsync(`${base} "${url}"`);
+        const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, url]);
         const [dur, h, f] = stdout.trim().split('|');
         return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
     } catch (e) {
         console.error('[yt-dlp getVideoInfo] Attempt 1 failed:', e.stderr || e.message);
-        if (COOKIE_FLAG) {
+        if (HAS_COOKIE) {
             console.log('[yt-dlp getVideoInfo] Retrying with cookie...');
             try {
-                const { stdout } = await execAsync(`${base} ${COOKIE_FLAG} "${url}"`);
+                const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, '--cookies', COOKIE_PATH, url]);
                 const [dur, h, f] = stdout.trim().split('|');
                 return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
             } catch (e2) {
@@ -124,9 +126,9 @@ async function getVideoInfo(url) {
 
 async function getYouTubeStream(url, maxHeight) {
     const fmt = `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]/bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/b[protocol!=m3u8_native][protocol!=m3u8]`;
-    const base = `"${YTDLP_PATH}" -f "${fmt}" -S "res:${maxHeight},fps" --get-url`;
+    const baseArgs = ['-f', fmt, '-S', `res:${maxHeight},fps`, '--get-url'];
     try {
-        const { stdout } = await execAsync(`${base} "${url}"`);
+        const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, url]);
         const lines = stdout.trim().split('\n').filter(l => l.trim());
         if (lines.length >= 2) return { videoUrl: lines[0].trim(), audioUrl: lines[1].trim(), usePipe: false };
         return { videoUrl: lines[0]?.trim() || null, audioUrl: null, usePipe: false };
@@ -198,8 +200,8 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 bitrateVideo: quality.bitrate,
                 bitrateAudio: quality.audioBitrate,
                 includeAudio: true,
-                minimizeLatency: true,
-                readrateInitialBurst: 10,
+                minimizeLatency: false,
+                readrateInitialBurst: 30,
                 videoCodec: Utils.normalizeVideoCodec("H264"),
             };
 
@@ -212,7 +214,11 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 }
             });
 
-            await playStream(output, streamer, { type: "go-live" });
+            const buffered = new PassThrough({ highWaterMark: BUFFER_SIZE });
+            output.pipe(buffered);
+            output.on('error', () => buffered.destroy());
+
+            await playStream(buffered, streamer, { type: "go-live" });
 
             if (activeMergeProcess) {
                 try { activeMergeProcess.kill(); } catch (e) {}
@@ -271,8 +277,8 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 bitrateVideo: quality.bitrate,
                 bitrateAudio: quality.audioBitrate,
                 includeAudio: true,
-                minimizeLatency: true,
-                readrateInitialBurst: 10,
+                minimizeLatency: false,
+                readrateInitialBurst: 30,
                 videoCodec: Utils.normalizeVideoCodec("H264"),
             };
 
@@ -293,12 +299,16 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 }
             });
 
+            const buffered = new PassThrough({ highWaterMark: BUFFER_SIZE });
+            output.pipe(buffered);
+            output.on('error', () => buffered.destroy());
+
             const needsNextChunk = totalDuration === 0 || (currentTimestamp + currentRunDuration < totalDuration);
             const prefetchPromise = (needsNextChunk && isStreaming)
                 ? getYouTubeStream(currentVideoUrl, quality.height)
                 : Promise.resolve({ videoUrl: null, audioUrl: null, usePipe: false });
 
-            await playStream(output, streamer, { type: "go-live" });
+            await playStream(buffered, streamer, { type: "go-live" });
 
             if (activeMergeProcess) {
                 try { activeMergeProcess.kill(); } catch (e) {}
@@ -323,6 +333,7 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
     } catch (error) {
         console.error('[System Error]', error);
         stopStreaming();
+        message.channel.send('❌ An error occurred during playback.').catch(() => {});
     }
 }
 
@@ -381,11 +392,19 @@ client.on('messageCreate', async (message) => {
             return message.reply("🎙️ Please join a voice channel before using !play.");
         }
 
-        if (!videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be")) {
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(videoUrl);
+        } catch {
+            return message.reply("❌ Invalid URL.");
+        }
+        const validHosts = ['www.youtube.com', 'youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'];
+        if (!validHosts.includes(parsedUrl.hostname)) {
             return message.reply("❌ Only YouTube links are supported.");
         }
 
         if (isStreaming) stopStreaming();
+        isStreaming = true;
 
         message.reply(`⏳ Processing video... (${HAS_GPU ? 'NVENC GPU' : 'x264 CPU'})`);
         startChunkedVideo(guildId, voiceId, videoUrl, message);
