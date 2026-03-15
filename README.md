@@ -1,54 +1,71 @@
-#Token
-get your discord token by using extension
+# **Token**
 
-install extension **Get cookies.txt** 
+Get your Discord token using this extension:
+
+**Get cookies.txt**  
 https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
 
-# **step 1**
-#Required
-Cookie (token)
-Admin id
-* with cookies.txt file from your account if you have a problem like sign in to confirm you're not a bot)
+---
 
-#How to install
+## **Step 1 — Requirements**
+You will need:
 
-For Windows
+- **cookies.txt** (exported from your browser)  
+- **Admin ID**
+
+> Use cookies.txt if you have issues such as login verification or “confirm you're not a bot”.
+
+---
+
+## **How to Install**
+
+---
+
+## **Windows**
 <details>
-<summary>windowns</summary>
+<summary>windows</summary>
 
-# **step 2**
-## run **install.cmd** to install
+### **Step 2**  
+Run **install.cmd** to install.
 
-# **step 3**
-## edit ".env" file to run
+### **Step 3**  
+Edit the **.env** file.
 
-# **step 4**
-## run **start.cmd** to start
+### **Step 4**  
+Run **start.cmd** to start.
 
 </details>
 
-For Linux
+---
 
+## **Linux**
 <details>
 <summary>linux</summary>
 
-# **step 2**
-## use script **install.sh** in terminal
+### **Step 2 — Install**
+Make the install script executable:
 
-# **1**
 ```sh
 chmod +x install.sh
 ```
-# **2**
+
+Run the installer:
+
 ```sh
 ./install.sh
 ```
 
-# **step 3**
-## edit **.env** file before run
+### **Step 3**  
+Edit the **.env** file.
 
-# **step 4**
+### **Step 4 — Start**
 ```sh
 ./start.sh
 ```
+
 </details>
+"""
+path="/mnt/data/README.md"
+with open(path,"w") as f:
+    f.write(content)
+path
