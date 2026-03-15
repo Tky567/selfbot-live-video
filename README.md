@@ -1,31 +1,36 @@
-bỏ qua tiện ích nếu địa chỉ ip của bạn không bị Sign in to confirm you're not a bot
+#Token
+get your discord token by using extension
 
-install extension **Get cookies.txt** in
+install extension **Get cookies.txt** 
 https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
 
 # **step 1**
-### chuẩn bị token và admin-id (kèm theo file cookies.txt từ tài khoản của bạn nếu thiết bị của bạn bị Sign in to confirm you're not a bot)
+#Required
+Cookie (token)
+Admin id
+* with cookies.txt file from your account if you have a problem like sign in to confirm you're not a bot)
 
-### phụ thuộc vào hệ điều hành để cài đặt phía dưới đây
+#How to install
 
+For Windows
 <details>
-<summary>windowns here</summary>
+<summary>windowns</summary>
 
 # **step 2**
-## run file **install.cmd** to install
+## run **install.cmd** to install
 
 # **step 3**
-## edit file .env để khởi chạy
+## edit ".env" file to run
 
 # **step 4**
-## run file **start.cmd** to start bot
+## run **start.cmd** to start
 
 </details>
 
-or
+For Linux
 
 <details>
-<summary>linux here</summary>
+<summary>linux</summary>
 
 # **step 2**
 ## use script **install.sh** in terminal
@@ -40,7 +45,7 @@ chmod +x install.sh
 ```
 
 # **step 3**
-## edit file **.env** trước khi chạy
+## edit **.env** file before run
 
 # **step 4**
 ```sh
