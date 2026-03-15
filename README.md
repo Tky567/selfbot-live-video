@@ -64,8 +64,3 @@ Edit the **.env** file.
 ```
 
 </details>
-"""
-path="/mnt/data/README.md"
-with open(path,"w") as f:
-    f.write(content)
-path
