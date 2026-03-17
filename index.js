@@ -34,16 +34,39 @@ try {
     console.error('[Init] Make sure bin/yt-dlp is the correct binary for the current OS (' + process.platform + ')');
 }
 
+let HAS_NODE = false;
+try {
+    const nodeVer = execSync('node --version', { timeout: 5000 }).toString().trim();
+    HAS_NODE = true;
+    console.log(`[Init] Node runtime detected for yt-dlp JS: ${nodeVer}`);
+} catch (e) {
+    console.warn('[Init] Node runtime not detected for yt-dlp JS runtime fallback.');
+}
+
 let HAS_DENO = false;
-if (!isWindows) {
-    try {
-        const denoVer = execSync('deno --version', { timeout: 5000 }).toString().split('\n')[0].trim();
-        HAS_DENO = true;
-        console.log(`[Init] ${denoVer}`);
-    } catch (e) {
-        console.warn('[Init] deno is not installed! yt-dlp needs deno to decode YouTube signatures.');
-        console.warn('[Init] Install with: curl -fsSL https://deno.land/install.sh | sh');
-    }
+try {
+    const denoVer = execSync('deno --version', { timeout: 5000 }).toString().split('\n')[0].trim();
+    HAS_DENO = true;
+    console.log(`[Init] Optional Deno runtime detected for yt-dlp JS: ${denoVer}`);
+} catch (e) {
+    console.log('[Init] Deno not found. Continuing with Node/default yt-dlp JS runtime.');
+}
+
+let YTDLP_JS_RUNTIME_ARGS = [];
+if (HAS_NODE) {
+    // Clear yt-dlp default runtimes, then force Node to avoid Deno dependency.
+    YTDLP_JS_RUNTIME_ARGS = ['--no-js-runtimes', '--js-runtimes', 'node'];
+    console.log('[Init] yt-dlp JS runtime forced to: node');
+} else if (HAS_DENO) {
+    // Node is unavailable; use Deno as optional fallback.
+    YTDLP_JS_RUNTIME_ARGS = ['--no-js-runtimes', '--js-runtimes', 'deno'];
+    console.log('[Init] yt-dlp JS runtime fallback: deno');
+} else {
+    console.warn('[Init] No external JS runtime found for yt-dlp; using yt-dlp defaults only.');
+}
+
+function withYtdlpRuntimeArgs(args = []) {
+    return [...YTDLP_JS_RUNTIME_ARGS, ...args];
 }
 
 const client = new Client();
@@ -56,9 +79,11 @@ let activeCommand = null;
 let activeMergeProcess = null;
 
 const CHUNK_THRESHOLD = 1200;
-const BUFFER_SIZE = 4096 * 1024 * 1024; // 64MB RAM buffer for smooth CPU usage
+const BUFFER_SIZE = 64 * 1024 * 1024; // 64MB RAM buffer for smooth CPU usage
 const PREFIX = "!";
 const ADMIN_IDS = (process.env.ADMIN_ID || "").split(",").map(id => id.trim()).filter(Boolean);
+const YOUTUBE_REFERER = 'https://www.youtube.com/';
+const YOUTUBE_ORIGIN = 'https://www.youtube.com';
 
 const COOKIE_PATH = path.join(__dirname, 'cookies.txt');
 const HAS_COOKIE = fs.existsSync(COOKIE_PATH);
@@ -102,58 +127,146 @@ function getNitroQuality(client, videoInfo) {
 }
 
 async function getVideoInfo(url) {
-    const fmt = 'bv*[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/bv*[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8]';
-    const baseArgs = ['--print', '%(duration)s|%(height)s|%(fps)s', '-f', fmt, '-S', 'res,fps', '--quiet', '--no-warnings'];
+    const infoArgs = ['--print', '%(duration)s|%(height)s|%(fps)s|%(is_live)s', '-S', 'res,fps', '--quiet', '--no-warnings'];
+    const parseInfo = (stdout) => {
+        const [dur, h, f, live] = stdout.trim().split('|');
+        return {
+            duration: parseInt(dur) || 0,
+            height: parseInt(h) || 0,
+            fps: Math.round(parseFloat(f)) || 0,
+            isLive: live === 'True' || dur === 'NA',
+        };
+    };
     try {
-        const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, url]);
-        const [dur, h, f] = stdout.trim().split('|');
-        return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
+        const { stdout } = await execFileAsync(YTDLP_PATH, withYtdlpRuntimeArgs([...infoArgs, url]));
+        return parseInfo(stdout);
     } catch (e) {
         console.error('[yt-dlp getVideoInfo] Attempt 1 failed:', e.stderr || e.message);
         if (HAS_COOKIE) {
             console.log('[yt-dlp getVideoInfo] Retrying with cookie...');
             try {
-                const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, '--cookies', COOKIE_PATH, url]);
-                const [dur, h, f] = stdout.trim().split('|');
-                return { duration: parseInt(dur) || 0, height: parseInt(h) || 0, fps: parseInt(f) || 0 };
+                const { stdout } = await execFileAsync(YTDLP_PATH, withYtdlpRuntimeArgs([...infoArgs, '--cookies', COOKIE_PATH, url]));
+                return parseInfo(stdout);
             } catch (e2) {
                 console.error('[yt-dlp getVideoInfo] Attempt 2 (cookie) failed:', e2.stderr || e2.message);
             }
         }
-        return { duration: 0, height: 0, fps: 0 };
+        return { duration: 0, height: 0, fps: 0, isLive: false };
     }
+}
+
+function normalizeStreamHeaders(headers = {}) {
+    return {
+        Referer: YOUTUBE_REFERER,
+        Origin: YOUTUBE_ORIGIN,
+        Connection: 'keep-alive',
+        ...headers,
+    };
+}
+
+function createEmptyStreamData(usePipe = false) {
+    return {
+        videoUrl: null,
+        audioUrl: null,
+        videoHeaders: null,
+        audioHeaders: null,
+        usePipe,
+    };
+}
+
+function parseStreamInfo(stdout) {
+    const info = JSON.parse(stdout);
+    const requestedFormats = Array.isArray(info.requested_formats) ? info.requested_formats : [];
+    const videoFormat = requestedFormats.find(format => format.vcodec && format.vcodec !== 'none') || requestedFormats[0] || null;
+    const audioFormat = requestedFormats.find(format => format.acodec && format.acodec !== 'none' && format.vcodec === 'none') || null;
+
+    if (videoFormat) {
+        return {
+            videoUrl: videoFormat.url || null,
+            audioUrl: audioFormat?.url || null,
+            videoHeaders: normalizeStreamHeaders(videoFormat.http_headers || info.http_headers || {}),
+            audioHeaders: audioFormat ? normalizeStreamHeaders(audioFormat.http_headers || info.http_headers || {}) : null,
+            usePipe: false,
+        };
+    }
+
+    return {
+        videoUrl: info.url || null,
+        audioUrl: null,
+        videoHeaders: normalizeStreamHeaders(info.http_headers || {}),
+        audioHeaders: null,
+        usePipe: false,
+    };
+}
+
+function formatHeadersForFfmpeg(headers = {}) {
+    return Object.entries(headers)
+        .filter(([, value]) => value !== undefined && value !== null && value !== '')
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\r\n');
+}
+
+function buildYtdlpFormat(maxHeight) {
+    // Direct mode: exclude HLS (ffmpeg opens URLs directly, HLS segments would need yt-dlp auth)
+    return [
+        `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]`,
+        `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]`,
+        `b[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]`,
+        `b[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]`,
+    ].join('/');
+}
+
+function buildYtdlpPipeFormat(maxHeight) {
+    // Pipe mode: allow ALL protocols including HLS — yt-dlp handles auth/segments itself
+    // This allows 720p/1080p HLS when direct HTTPS streams are unavailable (flagged IP)
+    return [
+        `bv*[height<=${maxHeight}][ext=mp4]+ba[ext=m4a]`,
+        `bv*[height<=${maxHeight}]+ba`,
+        `b[height<=${maxHeight}][ext=mp4]`,
+        `b[height<=${maxHeight}]`,
+    ].join('/');
 }
 
 async function getYouTubeStream(url, maxHeight) {
-    const fmt = `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]/bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/b[protocol!=m3u8_native][protocol!=m3u8]`;
-    const baseArgs = ['-f', fmt, '-S', `res:${maxHeight},fps`, '--get-url'];
+    const fmt = buildYtdlpFormat(maxHeight);
+    const baseArgs = ['-f', fmt, '-S', `res:${maxHeight},fps`, '--dump-single-json', '--no-playlist', '--no-warnings'];
+
     try {
-        const { stdout } = await execFileAsync(YTDLP_PATH, [...baseArgs, url]);
-        const lines = stdout.trim().split('\n').filter(l => l.trim());
-        if (lines.length >= 2) return { videoUrl: lines[0].trim(), audioUrl: lines[1].trim(), usePipe: false };
-        return { videoUrl: lines[0]?.trim() || null, audioUrl: null, usePipe: false };
+        const { stdout } = await execFileAsync(YTDLP_PATH, withYtdlpRuntimeArgs([...baseArgs, url]));
+        return parseStreamInfo(stdout);
     } catch (e) {
         console.error('[yt-dlp getYouTubeStream] Attempt 1 failed:', e.stderr || e.message);
         if (HAS_COOKIE) {
-            console.log('[yt-dlp] Switching to pipe mode with cookie (avoiding 403)');
-            return { videoUrl: null, audioUrl: null, usePipe: true };
+            console.log('[yt-dlp getYouTubeStream] Retrying with cookie...');
+            try {
+                await execFileAsync(YTDLP_PATH, withYtdlpRuntimeArgs([...baseArgs, '--cookies', COOKIE_PATH, url]));
+                console.log('[yt-dlp getYouTubeStream] Cookie retry succeeded, switching to stable cookie pipe mode');
+                return createEmptyStreamData(true);
+            } catch (e2) {
+                console.error('[yt-dlp getYouTubeStream] Attempt 2 (cookie) failed:', e2.stderr || e2.message);
+            }
+
+            console.log('[yt-dlp] Switching to pipe mode with cookie as final fallback');
+            return createEmptyStreamData(true);
         }
-        return { videoUrl: null, audioUrl: null, usePipe: false };
+        return createEmptyStreamData(false);
     }
 }
 
-function spawnYtdlpPipe(url, maxHeight) {
-    const fmt = `bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}][ext=mp4]+ba[protocol!=m3u8_native][protocol!=m3u8][ext=m4a]/bv*[protocol!=m3u8_native][protocol!=m3u8][height<=${maxHeight}]+ba[protocol!=m3u8_native][protocol!=m3u8]/b[protocol!=m3u8_native][protocol!=m3u8][ext=mp4]/b[protocol!=m3u8_native][protocol!=m3u8]`;
-    const args = [
+function spawnYtdlpPipe(url, maxHeight, isLive = false) {
+    const fmt = buildYtdlpPipeFormat(maxHeight);
+    const extraArgs = isLive ? [] : ['--extractor-args', 'youtube:player_client=tv_embedded'];
+    const args = withYtdlpRuntimeArgs([
         '-f', fmt,
         '-S', `res:${maxHeight},fps`,
         '--cookies', COOKIE_PATH,
+        ...extraArgs,
         '--merge-output-format', 'mkv',
         '--ffmpeg-location', process.env.FFMPEG_PATH,
         '-o', '-',
         url
-    ];
-    console.log('[yt-dlp pipe] Spawning yt-dlp pipe mode...');
+    ]);
+    console.log(`[yt-dlp pipe] Spawning yt-dlp pipe mode... client=${isLive ? 'default (live)' : 'tv_embedded'}`);
     const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     proc.stderr.on('data', d => {
         const msg = d.toString().trim();
@@ -169,12 +282,13 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
 
     const videoInfo = await getVideoInfo(videoSource);
     const totalDuration = videoInfo.duration;
+    const isLive = videoInfo.isLive;
     const dynamicChunkDuration = 1800;
 
     const quality = getNitroQuality(client, videoInfo);
     message.channel.send(
         `📺 **Now playing:** ${quality.height}p${quality.fps} | ` +
-        `${totalDuration > 0 ? `${Math.floor(totalDuration / 60)}m${totalDuration % 60}s` : 'Live'}`
+        `${isLive ? 'Live' : `${Math.floor(totalDuration / 60)}m${totalDuration % 60}s`}`
     );
 
     try {
@@ -186,7 +300,7 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
             console.log('[Stream] Pipe mode: yt-dlp will pipe video directly');
             message.channel.send('📡 Playing via pipe mode (cookie)...');
 
-            activeMergeProcess = spawnYtdlpPipe(currentVideoUrl, quality.height);
+            activeMergeProcess = spawnYtdlpPipe(currentVideoUrl, quality.height, isLive);
             const source = activeMergeProcess.stdout;
 
             const encoder = HAS_GPU
@@ -241,7 +355,7 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 message.channel.send('❌ Could not get video link. Please check the YouTube link or see the log.');
                 break;
             }
-            nextStreamData = { videoUrl: null, audioUrl: null, usePipe: false };
+            nextStreamData = createEmptyStreamData(false);
 
             const encoder = HAS_GPU
                 ? Encoders.nvenc({ preset: "p4" })
@@ -255,9 +369,13 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
             let source;
             if (streamData.audioUrl) {
                 const ffmpegPath = process.env.FFMPEG_PATH;
+                const videoHeaders = formatHeadersForFfmpeg(streamData.videoHeaders);
+                const audioHeaders = formatHeadersForFfmpeg(streamData.audioHeaders || streamData.videoHeaders);
                 activeMergeProcess = spawn(ffmpegPath, [
+                    '-headers', videoHeaders,
                     '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                     '-ss', seekTime.toString(), '-i', streamData.videoUrl,
+                    '-headers', audioHeaders,
                     '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                     '-ss', seekTime.toString(), '-i', streamData.audioUrl,
                     '-t', totalTime,
@@ -280,6 +398,7 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
                 minimizeLatency: false,
                 readrateInitialBurst: 30,
                 videoCodec: Utils.normalizeVideoCodec("H264"),
+                customHeaders: streamData.videoHeaders || undefined,
             };
 
             if (!streamData.audioUrl) {
@@ -306,7 +425,7 @@ async function startChunkedVideo(guildId, voiceChannelId, videoSource, message) 
             const needsNextChunk = totalDuration === 0 || (currentTimestamp + currentRunDuration < totalDuration);
             const prefetchPromise = (needsNextChunk && isStreaming)
                 ? getYouTubeStream(currentVideoUrl, quality.height)
-                : Promise.resolve({ videoUrl: null, audioUrl: null, usePipe: false });
+                : Promise.resolve(createEmptyStreamData(false));
 
             await playStream(buffered, streamer, { type: "go-live" });
 

@@ -1,0 +1,15 @@
+node_modules/
+cookies.txt
+.env
+
+logs
+*.log
+npm-debug.log*
+
+.DS_Store
+Thumbs.db
+
+package-lock.json
+yarn.lock
+README.md
+.vscode/
